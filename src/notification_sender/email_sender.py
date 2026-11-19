@@ -6,6 +6,7 @@ Email 发送提醒服务
 1. 通过 SMTP 发送 Email 消息
 """
 import logging
+import os
 from typing import Optional, List
 from datetime import datetime
 from email.mime.text import MIMEText
