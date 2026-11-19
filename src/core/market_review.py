@@ -140,15 +140,15 @@ def _get_market_review_text(language: str) -> dict[str, str]:
             "separator": "> 다음 시장 시황 리뷰",
         }
     return {
-        "root_title": "# 🎯 大盘复盘",
-        "push_title": "🎯 大盘复盘",
-        "cn_title": "# A股大盘复盘",
-        "us_title": "# 美股大盘复盘",
-        "hk_title": "# 港股大盘复盘",
-        "jp_title": "# 日股大盘复盘",
-        "kr_title": "# 韩股大盘复盘",
-        "tw_title": "# 台股大盘复盘",
-        "separator": "> 以下为下一市场大盘复盘",
+        "root_title": "# 🎯 시황 요약",
+        "push_title": "🎯 시황 요약",
+        "cn_title": "# 중국 증시 요약",
+        "us_title": "# 미국 증시 요약",
+        "hk_title": "# 홍콩 증시 요약",
+        "jp_title": "# 일본 증시 요약",
+        "kr_title": "# 한국 증시 요약",
+        "tw_title": "# 대만 증시 요약",
+        "separator": "> 다음 시장 요약",
     }
 
 

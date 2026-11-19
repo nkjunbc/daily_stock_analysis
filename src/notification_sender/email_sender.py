@@ -112,6 +112,8 @@ class EmailSender:
     def _format_sender_address(self, sender: str) -> str:
         """Encode display name safely so non-ASCII sender names work across SMTP providers."""
         sender_name = self._email_config.get('sender_name') or '股票分析助手'
+        if os.getenv('REPORT_LANGUAGE', '').strip().lower() == 'ko' and sender_name in ('daily_stock_analysis股票分析助手', '股票分析助手'):
+            sender_name = '오늘의 관심종목 리포트'
         return formataddr((str(Header(str(sender_name), 'utf-8')), sender))
 
     @staticmethod
@@ -163,7 +165,11 @@ class EmailSender:
             # 生成主题
             if subject is None:
                 date_str = datetime.now().strftime('%Y-%m-%d')
-                subject = f"📈 股票智能分析报告 - {date_str}"
+                lang = os.getenv('REPORT_LANGUAGE', '').strip().lower()
+                if lang == 'ko':
+                    subject = f"📈 관심종목 일일 분석 리포트 - {date_str}"
+                else:
+                    subject = f"📈 股票智能分析报告 - {date_str}"
 
             sanitized_content = strip_hidden_markdown_metadata(content).strip()
             
@@ -237,7 +243,11 @@ class EmailSender:
         server: Optional[smtplib.SMTP] = None
         try:
             date_str = datetime.now().strftime('%Y-%m-%d')
-            subject = f"📈 股票智能分析报告 - {date_str}"
+            lang = os.getenv('REPORT_LANGUAGE', '').strip().lower()
+            if lang == 'ko':
+                subject = f"📈 관심종목 일일 분석 리포트 - {date_str}"
+            else:
+                subject = f"📈 股票智能分析报告 - {date_str}"
             msg = MIMEMultipart('related')
             msg['Subject'] = Header(subject, 'utf-8')
             msg['From'] = self._format_sender_address(sender)
