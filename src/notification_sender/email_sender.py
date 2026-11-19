@@ -65,6 +65,44 @@ class EmailSender:
             'receivers': config.email_receivers or ([config.email_sender] if config.email_sender else []),
         }
         self._stock_email_groups = getattr(config, 'stock_email_groups', None) or []
+        self._report_language = self._resolve_report_language(config)
+
+    @staticmethod
+    def _resolve_report_language(config: Optional[Config]) -> str:
+        """Return the report output language (zh/en/ko) from config or env."""
+        raw = getattr(config, "report_language", None) or os.getenv('REPORT_LANGUAGE', '') or 'zh'
+        value = str(raw).strip().lower().replace('_', '-').replace(' ', '-')
+        if value in ('ko', 'kr', 'ko-kr', 'korean'):
+            return 'ko'
+        if value in ('en', 'en-us', 'en-gb', 'english'):
+            return 'en'
+        return 'zh'
+
+    def _localized_email_text(self) -> dict:
+        """Body copy for the inline-image email, kept free of Chinese for ko/en."""
+        if self._report_language == 'ko':
+            return {
+                'plain': '리포트가 생성되었습니다. 아래 이미지를 확인해 주세요.',
+                'html': '<p>리포트가 생성되었습니다. 아래 이미지를 확인해 주세요(클릭하면 원본 크기로 볼 수 있습니다):</p>',
+                'alt': '오늘의 관심종목 리포트',
+                'subject': '📈 관심종목 일일 분석 리포트',
+                'sender': '오늘의 관심종목 리포트',
+            }
+        if self._report_language == 'en':
+            return {
+                'plain': 'Your report is ready. Please see the image below.',
+                'html': '<p>Your report is ready. Please see the image below (click to enlarge):</p>',
+                'alt': 'Stock analysis report',
+                'subject': '📈 Daily Stock Analysis Report',
+                'sender': 'Daily Stock Analysis',
+            }
+        return {
+            'plain': '报告已生成，详见下方图片。',
+            'html': '<p>报告已生成，详见下方图片（点击可查看大图）：</p>',
+            'alt': '股票分析报告',
+            'subject': '📈 股票智能分析报告',
+            'sender': '股票分析助手',
+        }
         
     def _is_email_configured(self) -> bool:
         """检查邮件配置是否完整（只需邮箱和授权码）"""
@@ -112,9 +150,13 @@ class EmailSender:
 
     def _format_sender_address(self, sender: str) -> str:
         """Encode display name safely so non-ASCII sender names work across SMTP providers."""
-        sender_name = self._email_config.get('sender_name') or '股票分析助手'
-        if os.getenv('REPORT_LANGUAGE', '').strip().lower() == 'ko' and sender_name in ('daily_stock_analysis股票分析助手', '股票分析助手'):
-            sender_name = '오늘의 관심종목 리포트'
+        text = self._localized_email_text()
+        sender_name = self._email_config.get('sender_name') or text['sender']
+        if self._report_language in ('ko', 'en') and sender_name in (
+            'daily_stock_analysis股票分析助手',
+            '股票分析助手',
+        ):
+            sender_name = text['sender']
         return formataddr((str(Header(str(sender_name), 'utf-8')), sender))
 
     @staticmethod
@@ -165,12 +207,9 @@ class EmailSender:
         try:
             # 生成主题
             if subject is None:
+                text = self._localized_email_text()
                 date_str = datetime.now().strftime('%Y-%m-%d')
-                lang = os.getenv('REPORT_LANGUAGE', '').strip().lower()
-                if lang == 'ko':
-                    subject = f"📈 관심종목 일일 분석 리포트 - {date_str}"
-                else:
-                    subject = f"📈 股票智能分析报告 - {date_str}"
+                subject = f"{text['subject']} - {date_str}" if self._report_language in ('ko', 'en') else f"📈 股票智能分析报告 - {date_str}"
 
             sanitized_content = strip_hidden_markdown_metadata(content).strip()
             
@@ -244,9 +283,9 @@ class EmailSender:
         server: Optional[smtplib.SMTP] = None
         try:
             date_str = datetime.now().strftime('%Y-%m-%d')
-            lang = os.getenv('REPORT_LANGUAGE', '').strip().lower()
-            if lang == 'ko':
-                subject = f"📈 관심종목 일일 분석 리포트 - {date_str}"
+            text = self._localized_email_text()
+            if self._report_language in ('ko', 'en'):
+                subject = f"{text['subject']} - {date_str}"
             else:
                 subject = f"📈 股票智能分析报告 - {date_str}"
             msg = MIMEMultipart('related')
@@ -255,10 +294,9 @@ class EmailSender:
             msg['To'] = ', '.join(receivers)
 
             alt = MIMEMultipart('alternative')
-            alt.attach(MIMEText('报告已生成，详见下方图片。', 'plain', 'utf-8'))
-            html_body = (
-                '<p>报告已生成，详见下方图片（点击可查看大图）：</p>'
-                '<p><img src="cid:report-image" alt="股票分析报告" style="max-width:100%%;" /></p>'
+            alt.attach(MIMEText(text['plain'], 'plain', 'utf-8'))
+            html_body = text['html'] + (
+                f'<p><img src="cid:report-image" alt="{text["alt"]}" style="max-width:100%%;" /></p>'
             )
             alt.attach(MIMEText(html_body, 'html', 'utf-8'))
             msg.attach(alt)

@@ -29,7 +29,7 @@ PROJECT_DISPLAY_NAME = "股票智能分析系统"
 DEFAULT_XIAOHONGSHU_QR_PATH = "src/assets/share_image/xiaohongshu_qr.jpg"
 DEFAULT_XIAOHONGSHU_HANDLE = "@霸天土小豆"
 _MARKET_RE = re.compile(
-    r"(?:大盘复盘|市场复盘|market\s+(?:review|recap)|시황\s*리뷰)", re.IGNORECASE
+    r"(?:大盘复盘|市场复盘|market\s+(?:review|recap)|시황\s*(?:리뷰|요약))", re.IGNORECASE
 )
 _MARKET_SCOPE_RE = re.compile(
     r"(?:A股|港股|美股|日股|韩股|台股|中国\s*A주|미국|홍콩|일본|한국|대만|\b(?:cn|hk|us|jp|kr|tw)\b|a[-\s]?share|hong\s+kong|japan|korea|taiwan|u\.?s\.?)",

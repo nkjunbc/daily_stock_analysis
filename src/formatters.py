@@ -7,12 +7,43 @@
 提供各种内容格式化工具函数，用于将通用格式转换为平台特定格式。
 """
 
+import os
 import re
 from typing import Callable, List, Optional
 
 import markdown2
 
-TRUNCATION_SUFFIX = "\n\n...(本段内容过长已截断)"
+_TRUNCATION_SUFFIX_BY_LANGUAGE = {
+    "zh": "\n\n...(本段内容过长已截断)",
+    "ko": "\n\n...(본문이 길어 일부 내용이 생략되었습니다)",
+    "en": "\n\n...(truncated for length)",
+}
+TRUNCATION_SUFFIX = _TRUNCATION_SUFFIX_BY_LANGUAGE["zh"]
+
+
+def _reported_language() -> str:
+    """Best-effort report language for chat-facing formatting (defaults to zh)."""
+    code = (os.getenv("REPORT_LANGUAGE") or "zh").strip().lower().replace("_", "-")
+    if code in ("ko", "kr", "ko-kr", "korean"):
+        return "ko"
+    if code in ("en", "en-us", "en-gb", "english"):
+        return "en"
+    return "zh"
+
+
+def get_truncation_suffix(language: Optional[str] = None) -> str:
+    """Return the truncation notice in the report language (no Chinese for ko/en)."""
+    code = (language or _reported_language()).strip().lower().replace("_", "-")
+    if code in ("ko", "kr", "ko-kr", "korean"):
+        return _TRUNCATION_SUFFIX_BY_LANGUAGE["ko"]
+    if code in ("en", "en-us", "en-gb", "english"):
+        return _TRUNCATION_SUFFIX_BY_LANGUAGE["en"]
+    return _TRUNCATION_SUFFIX_BY_LANGUAGE["zh"]
+
+
+def _key_value_separator() -> str:
+    """Label separator for compact key-value rows (zh keeps the full-width colon)."""
+    return "：" if _reported_language() == "zh" else ": "
 PAGE_MARKER_PREFIX = f"\n\n📄"
 PAGE_MARKER_SAFE_BYTES = 16 # "\n\n📄 9999/9999"
 PAGE_MARKER_SAFE_LEN = 13   # "\n\n📄 9999/9999"
@@ -502,7 +533,7 @@ def _format_two_column_table_row(header: List[str], row: List[str]) -> str:
         return key
     if value.upper() == "N/A" and value_header in {"类型", "Type"}:
         return key
-    return f"{key}：{value}"
+    return f"{key}{_key_value_separator()}{value}"
 
 
 def _flush_table_as_key_value_rows(buffer: List[str], output: List[str], *, bullet: str) -> None:
@@ -598,7 +629,7 @@ def _chunk_by_max_bytes(content: str, max_bytes: int) -> List[str]:
         raise ValueError(f"max_bytes={max_bytes} < {MIN_MAX_BYTES}, 可能陷入无限递归。")
     
     sections: List[str] = []
-    suffix = TRUNCATION_SUFFIX
+    suffix = get_truncation_suffix()
     effective_max_bytes = max_bytes - _bytes(suffix)
     if effective_max_bytes <= 0:
         effective_max_bytes = max_bytes
@@ -994,7 +1025,7 @@ def _chunk_by_max_words(content: str, max_words: int, special_char_len: int = 2)
         )
 
     sections = []
-    suffix = TRUNCATION_SUFFIX
+    suffix = get_truncation_suffix()
     effective_max_words = max_words - len(suffix)  # 预留后缀，避免边界超限
     if effective_max_words <= 0:
         effective_max_words = max_words

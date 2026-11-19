@@ -997,11 +997,11 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self, mock_get_config: mock.MagicMock
     ):
         labels_by_language = {
-            "zh": "数据来源",
-            "en": "Data Sources",
-            "ko": "데이터 출처",
+            "zh": ("数据来源", "："),
+            "en": ("Data Sources", ": "),
+            "ko": ("데이터 출처", ": "),
         }
-        for language, expected_label in labels_by_language.items():
+        for language, (expected_label, separator) in labels_by_language.items():
             for renderer_enabled in (False, True):
                 for report_type in ("simple", "brief"):
                     with self.subTest(
@@ -1023,7 +1023,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                         )
 
                         self.assertIn(
-                            f"*📋 {expected_label}：daily:AlphaFetcher*",
+                            f"*📋 {expected_label}{separator}daily:AlphaFetcher*",
                             out,
                         )
 

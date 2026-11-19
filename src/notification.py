@@ -111,6 +111,11 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
+def _label_separator(language: Optional[str] = None) -> str:
+    """Separator after a bold label: zh keeps the full-width colon, ko/en use ASCII."""
+    return "：" if normalize_report_language(language) == "zh" else ": "
+
+
 def _format_strategy_skill_items(items: Any, report_language: str = "zh") -> str:
     none_text = get_report_labels(report_language).get("none_label", "None")
     if not isinstance(items, list):
@@ -422,10 +427,26 @@ class NotificationService(
         return empty_news_disclosure(result, language)
 
     @staticmethod
+    def _spacex_section(report_language: str) -> str:
+        """Return the SpaceX (private company) digest block, or "" when unavailable.
+
+        Strictly fail-open: any error in the digest keeps the report exactly as it
+        would be without this section.
+        """
+        try:
+            from src.spacex_watch import render_spacex_section
+
+            return render_spacex_section(report_language) or ""
+        except Exception as exc:  # noqa: BLE001 - never break the daily report
+            logger.warning("SpaceX 동향 섹션 생성 실패(무시): %s", exc)
+            return ""
+
+    @staticmethod
     def _append_data_sources_line(
         lines: List[str],
         result: AnalysisResult,
         labels: Dict[str, str],
+        report_language: Optional[str] = None,
     ) -> bool:
         data_sources = getattr(result, "data_sources", None)
         if not isinstance(data_sources, str):
@@ -433,7 +454,9 @@ class NotificationService(
         data_sources = data_sources.strip()
         if not data_sources:
             return False
-        lines.append(f"*📋 {labels['data_sources_label']}：{data_sources}*")
+        language = report_language or getattr(result, "report_language", "zh")
+        separator = "：" if normalize_report_language(language) == "zh" else ": "
+        lines.append(f"*📋 {labels['data_sources_label']}{separator}{data_sources}*")
         return True
 
     def generate_aggregate_report(
@@ -441,12 +464,15 @@ class NotificationService(
         results: List[AnalysisResult],
         report_type: Any,
         report_date: Optional[str] = None,
+        include_spacex: bool = False,
     ) -> str:
         """Generate the aggregate report content used by merge/save/push paths."""
         normalized_type = self._normalize_report_type(report_type)
         if normalized_type == ReportType.BRIEF:
             return self.generate_brief_report(results, report_date=report_date)
-        return self.generate_dashboard_report(results, report_date=report_date)
+        return self.generate_dashboard_report(
+            results, report_date=report_date, include_spacex=include_spacex
+        )
 
     def _collect_models_used(self, results: List[AnalysisResult]) -> List[str]:
         if not self._should_show_llm_model():
@@ -919,12 +945,21 @@ class NotificationService(
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
 
+        def _t(en: str, zh: str, ko: str) -> str:
+            if report_language == "en":
+                return en
+            if report_language == "ko":
+                return ko
+            return zh
+
+        sep = "：" if normalize_report_language(report_language) == "zh" else ": "
+
         # 标题
         report_lines = [
             f"# 📅 {report_date} {labels['report_title']}",
             "",
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit']} | "
-            f"{labels['generated_at_label']}：{datetime.now().strftime('%H:%M:%S')}",
+            f"{labels['generated_at_label']}{sep}{datetime.now().strftime('%H:%M:%S')}",
         ]
         self._append_market_status_line(report_lines, results, report_language)
         report_lines.extend(["---", ""])
@@ -942,7 +977,7 @@ class NotificationService(
         report_lines.extend([
             f"## 📊 {labels['summary_heading']}",
             "",
-            "| 指标 | 数值 |",
+            f"| {_t('Metric', '指标', '지표')} | {_t('Value', '数值', '값')} |",
             "|------|------|",
             f"| 🟢 {labels['buy_label']} | **{buy_count}** {labels['stock_unit_compact']} |",
             f"| 🟡 {labels['watch_label']} | **{hold_count}** {labels['stock_unit_compact']} |",
@@ -977,10 +1012,10 @@ class NotificationService(
                 report_lines.extend([
                     f"### {emoji} {self._get_display_name(result, report_language)} ({result.code})",
                     "",
-                    f"**{labels['action_advice_label']}：{signal_text}** | "
-                    f"**{labels['score_label']}：{result.sentiment_score}** | "
-                    f"**{labels['trend_label']}：{localize_trend_prediction(result.trend_prediction, report_language)}** | "
-                    f"**Confidence：{confidence_stars}**",
+                    f"**{labels['action_advice_label']}{sep}{signal_text}** | "
+                    f"**{labels['score_label']}{sep}{result.sentiment_score}** | "
+                    f"**{labels['trend_label']}{sep}{localize_trend_prediction(result.trend_prediction, report_language)}** | "
+                    f"**{_t('Confidence', '置信度', '신뢰도')}{sep}{confidence_stars}**",
                     "",
                 ])
                 self._append_market_snapshot(report_lines, result)
@@ -988,21 +1023,21 @@ class NotificationService(
                 # 核心看点
                 if hasattr(result, 'key_points') and result.key_points:
                     report_lines.extend([
-                        f"**🎯 核心看点**：{result.key_points}",
+                        f"**🎯 {_t('Key Points', '核心看点', '핵심 포인트')}**{sep}{result.key_points}",
                         "",
                     ])
 
                 # 买入/卖出理由
                 if hasattr(result, 'buy_reason') and result.buy_reason:
                     report_lines.extend([
-                        f"**💡 操作理由**：{result.buy_reason}",
+                        f"**💡 {_t('Rationale', '操作理由', '판단 근거')}**{sep}{result.buy_reason}",
                         "",
                     ])
 
                 # 走势分析
                 if hasattr(result, 'trend_analysis') and result.trend_analysis:
                     report_lines.extend([
-                        "#### 📉 走势分析",
+                        f"#### 📉 {_t('Trend Analysis', '走势分析', '추세 분석')}",
                         f"{result.trend_analysis}",
                         "",
                     ])
@@ -1010,12 +1045,16 @@ class NotificationService(
                 # 短期/中期展望
                 outlook_lines = []
                 if hasattr(result, 'short_term_outlook') and result.short_term_outlook:
-                    outlook_lines.append(f"- **短期（1-3日）**：{result.short_term_outlook}")
+                    outlook_lines.append(
+                        f"- **{_t('Short term (1-3 days)', '短期（1-3日）', '단기(1~3일)')}**{sep}{result.short_term_outlook}"
+                    )
                 if hasattr(result, 'medium_term_outlook') and result.medium_term_outlook:
-                    outlook_lines.append(f"- **中期（1-2周）**：{result.medium_term_outlook}")
+                    outlook_lines.append(
+                        f"- **{_t('Medium term (1-2 weeks)', '中期（1-2周）', '중기(1~2주)')}**{sep}{result.medium_term_outlook}"
+                    )
                 if outlook_lines:
                     report_lines.extend([
-                        "#### 🔮 市场展望",
+                        f"#### 🔮 {_t('Market Outlook', '市场展望', '시장 전망')}",
                         *outlook_lines,
                         "",
                     ])
@@ -1023,16 +1062,16 @@ class NotificationService(
                 # 技术面分析
                 tech_lines = []
                 if result.technical_analysis:
-                    tech_lines.append(f"**综合**：{result.technical_analysis}")
+                    tech_lines.append(f"**{_t('Overall', '综合', '종합')}**{sep}{result.technical_analysis}")
                 if hasattr(result, 'ma_analysis') and result.ma_analysis:
-                    tech_lines.append(f"**均线**：{result.ma_analysis}")
+                    tech_lines.append(f"**{_t('Moving Averages', '均线', '이동평균')}**{sep}{result.ma_analysis}")
                 if hasattr(result, 'volume_analysis') and result.volume_analysis:
-                    tech_lines.append(f"**量能**：{result.volume_analysis}")
+                    tech_lines.append(f"**{_t('Volume', '量能', '거래량')}**{sep}{result.volume_analysis}")
                 if hasattr(result, 'pattern_analysis') and result.pattern_analysis:
-                    tech_lines.append(f"**形态**：{result.pattern_analysis}")
+                    tech_lines.append(f"**{_t('Pattern', '形态', '패턴')}**{sep}{result.pattern_analysis}")
                 if tech_lines:
                     report_lines.extend([
-                        "#### 📊 技术面分析",
+                        f"#### 📊 {_t('Technicals', '技术面分析', '기술적 분석')}",
                         *tech_lines,
                         "",
                     ])
@@ -1042,12 +1081,12 @@ class NotificationService(
                 if hasattr(result, 'fundamental_analysis') and result.fundamental_analysis:
                     fund_lines.append(result.fundamental_analysis)
                 if hasattr(result, 'sector_position') and result.sector_position:
-                    fund_lines.append(f"**板块地位**：{result.sector_position}")
+                    fund_lines.append(f"**{_t('Sector Position', '板块地位', '섹터 내 위치')}**{sep}{result.sector_position}")
                 if hasattr(result, 'company_highlights') and result.company_highlights:
-                    fund_lines.append(f"**公司亮点**：{result.company_highlights}")
+                    fund_lines.append(f"**{_t('Company Highlights', '公司亮点', '기업 하이라이트')}**{sep}{result.company_highlights}")
                 if fund_lines:
                     report_lines.extend([
-                        "#### 🏢 基本面分析",
+                        f"#### 🏢 {_t('Fundamentals', '基本面分析', '펀더멘털')}",
                         *fund_lines,
                         "",
                     ])
@@ -1055,14 +1094,14 @@ class NotificationService(
                 # 消息面/情绪面
                 news_lines = []
                 if result.news_summary:
-                    news_lines.append(f"**新闻摘要**：{result.news_summary}")
+                    news_lines.append(f"**{_t('News Summary', '新闻摘要', '뉴스 요약')}**{sep}{result.news_summary}")
                 if hasattr(result, 'market_sentiment') and result.market_sentiment:
-                    news_lines.append(f"**市场情绪**：{result.market_sentiment}")
+                    news_lines.append(f"**{_t('Market Sentiment', '市场情绪', '시장 심리')}**{sep}{result.market_sentiment}")
                 if hasattr(result, 'hot_topics') and result.hot_topics:
-                    news_lines.append(f"**相关热点**：{result.hot_topics}")
+                    news_lines.append(f"**{_t('Hot Topics', '相关热点', '관련 이슈')}**{sep}{result.hot_topics}")
                 news_disclosure = self._empty_news_disclosure(result, report_language)
                 if news_lines or news_disclosure:
-                    report_lines.append("#### 📰 消息面/情绪面")
+                    report_lines.append(f"#### 📰 {_t('News & Sentiment', '消息面/情绪面', '뉴스·심리')}")
                     if news_disclosure:
                         report_lines.append(news_disclosure)
                     report_lines.extend(news_lines)
@@ -1071,7 +1110,7 @@ class NotificationService(
                 # 综合分析
                 if result.analysis_summary:
                     report_lines.extend([
-                        "#### 📝 综合分析",
+                        f"#### 📝 {_t('Overall Analysis', '综合分析', '종합 분석')}",
                         result.analysis_summary,
                         "",
                     ])
@@ -1079,20 +1118,20 @@ class NotificationService(
                 # 风险提示
                 if hasattr(result, 'risk_warning') and result.risk_warning:
                     report_lines.extend([
-                        f"⚠️ **风险提示**：{result.risk_warning}",
+                        f"⚠️ **{_t('Risk Warning', '风险提示', '리스크 경고')}**{sep}{result.risk_warning}",
                         "",
                     ])
 
                 # 数据来源说明
                 if hasattr(result, 'search_performed') and result.search_performed:
-                    report_lines.append("*🔍 已执行联网搜索*")
-                self._append_data_sources_line(report_lines, result, labels)
+                    report_lines.append(f"*🔍 {_t('Web search performed', '已执行联网搜索', '웹 검색 실행됨')}*")
+                self._append_data_sources_line(report_lines, result, labels, report_language)
 
                 # 错误信息（如果有）
                 if not result.success and result.error_message:
                     report_lines.extend([
                         "",
-                        f"❌ **分析异常**：{result.error_message[:100]}",
+                        f"❌ **{_t('Analysis Error', '分析异常', '분석 오류')}**{sep}{result.error_message[:100]}",
                     ])
 
                 report_lines.extend([
@@ -1104,7 +1143,7 @@ class NotificationService(
         # 底部信息（去除免责声明）
         report_lines.extend([
             "",
-            f"*{labels['generated_at_label']}：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+            f"*{labels['generated_at_label']}{sep}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
         ])
 
         return "\n".join(report_lines)
@@ -1255,7 +1294,8 @@ class NotificationService(
     def generate_dashboard_report(
         self,
         results: List[AnalysisResult],
-        report_date: Optional[str] = None
+        report_date: Optional[str] = None,
+        include_spacex: bool = False,
     ) -> str:
         """
         生成决策仪表盘格式的日报（详细版）
@@ -1299,6 +1339,9 @@ class NotificationService(
                 },
             )
             if out:
+                spacex_section = self._spacex_section(report_language) if include_spacex else ""
+                if spacex_section:
+                    return f"{out.rstrip()}\n\n{spacex_section}"
                 return out
 
         if report_date is None:
@@ -1336,7 +1379,7 @@ class NotificationService(
                     news_disclosure = self._empty_news_disclosure(r, report_language)
                     if news_disclosure:
                         report_lines.append(news_disclosure)
-                    self._append_data_sources_line(report_lines, r, labels)
+                    self._append_data_sources_line(report_lines, r, labels, report_language)
             report_lines.extend([
                 "",
                 "---",
@@ -1602,7 +1645,7 @@ class NotificationService(
                             report_lines.append(f"{result.news_summary}")
                         report_lines.append("")
 
-                if self._append_data_sources_line(report_lines, result, labels):
+                if self._append_data_sources_line(report_lines, result, labels, report_language):
                     report_lines.append("")
 
                 report_lines.extend([
@@ -1611,13 +1654,18 @@ class NotificationService(
                 ])
 
         # 底部（去除免责声明）
+        spacex_section = self._spacex_section(report_language) if include_spacex else ""
+        if spacex_section:
+            report_lines.extend([spacex_section, "", "---", ""])
         report_lines.extend([
             "",
-            f"*{labels['generated_at_label']}：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+            f"*{labels['generated_at_label']}{_label_separator(report_language)}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
         ])
         models = self._collect_models_used(results)
         if models:
-            report_lines.append(f"*{labels['analysis_model_label']}：{', '.join(models)}*")
+            report_lines.append(
+                f"*{labels['analysis_model_label']}{_label_separator(report_language)}{', '.join(models)}*"
+            )
 
         return "\n".join(report_lines)
 
@@ -1947,7 +1995,7 @@ class NotificationService(
             news_disclosure = self._empty_news_disclosure(r, report_language)
             if news_disclosure:
                 lines.append(news_disclosure)
-            if self._append_data_sources_line(lines, r, labels):
+            if self._append_data_sources_line(lines, r, labels, report_language):
                 lines.append("")
         lines.append("")
         lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
@@ -2171,20 +2219,56 @@ class NotificationService(
 
         lines.append("")
 
+    # Currency suffix per report language, so a Korean report never prints Chinese units.
     _CURRENCY_SUFFIX = {
-        "USD": "美元",
-        "HKD": "港元",
-        "CNY": "元",
-        "RMB": "元",
-        "CNH": "元",
-        "TWD": "新台币",  # 台股 (TWSE/TPEx) 以新台币计价，避免与 A 股「元」(人民币) 混淆
+        "zh": {
+            "USD": "美元",
+            "HKD": "港元",
+            "CNY": "元",
+            "RMB": "元",
+            "CNH": "元",
+            "TWD": "新台币",  # 台股 (TWSE/TPEx) 以新台币计价，避免与 A 股「元」(人民币) 混淆
+        },
+        "ko": {
+            "USD": "달러",
+            "HKD": "홍콩달러",
+            "CNY": "위안",
+            "RMB": "위안",
+            "CNH": "위안",
+            "TWD": "대만달러",
+            "JPY": "엔",
+            "EUR": "유로",
+        },
+        "en": {
+            "USD": "USD",
+            "HKD": "HKD",
+            "CNY": "CNY",
+            "RMB": "CNY",
+            "CNH": "CNY",
+            "TWD": "TWD",
+            "JPY": "JPY",
+            "EUR": "EUR",
+        },
     }
 
     @classmethod
-    def _format_amount_cn(cls, value: Any, currency: Optional[str] = None) -> str:
-        """Format absolute amounts in 亿/万 + currency suffix; returns N/A on non-numeric.
+    def _currency_suffix(cls, currency: Optional[str], language: Optional[str] = None) -> str:
+        lang = normalize_report_language(language)
+        table = cls._CURRENCY_SUFFIX.get(lang) or cls._CURRENCY_SUFFIX["zh"]
+        raw = (currency or "").upper()
+        return table.get(raw) or table.get("CNY") or "元"
+
+    @classmethod
+    def _format_amount_cn(
+        cls,
+        value: Any,
+        currency: Optional[str] = None,
+        language: Optional[str] = None,
+    ) -> str:
+        """Format absolute amounts in 亿/万 (ko: 억/만) + currency suffix; N/A on non-numeric.
 
         ``currency`` accepts ``USD``/``HKD``/``CNY``; unknown values fall back to 元.
+        ``language`` selects the unit words (zh default keeps the original Chinese units).
         """
         try:
             amount = float(value)
@@ -2192,11 +2276,27 @@ class NotificationService(
             return "N/A"
         if amount != amount:  # NaN
             return "N/A"
+        lang = normalize_report_language(language)
         sign = "-" if amount < 0 else ""
         abs_amount = abs(amount)
-        suffix = cls._CURRENCY_SUFFIX.get((currency or "").upper(), "元")
+        suffix = cls._currency_suffix(currency, lang)
         # Compare the rounded figure too, so 99_999_999 reads 1.00 亿 rather than 10000.00 万.
-        if abs_amount >= 1e8 or round(abs_amount / 1e4, 2) >= 1e4:
+        big = abs_amount >= 1e8 or round(abs_amount / 1e4, 2) >= 1e4
+        if lang == "ko":
+            if big:
+                return f"{sign}{abs_amount / 1e8:.2f}억 {suffix}"
+            if abs_amount >= 1e4 or round(abs_amount) >= 1e4:
+                return f"{sign}{abs_amount / 1e4:.2f}만 {suffix}"
+            return f"{sign}{abs_amount:.0f} {suffix}"
+        if lang == "en":
+            if abs_amount >= 1e9:
+                return f"{sign}{abs_amount / 1e9:.2f}B {suffix}"
+            if abs_amount >= 1e6:
+                return f"{sign}{abs_amount / 1e6:.2f}M {suffix}"
+            if abs_amount >= 1e3:
+                return f"{sign}{abs_amount / 1e3:.2f}K {suffix}"
+            return f"{sign}{abs_amount:.0f} {suffix}"
+        if big:
             return f"{sign}{abs_amount / 1e8:.2f} 亿{suffix}"
         if abs_amount >= 1e4 or round(abs_amount) >= 1e4:
             return f"{sign}{abs_amount / 1e4:.2f} 万{suffix}"
@@ -2210,14 +2310,19 @@ class NotificationService(
             return "N/A"
 
     @classmethod
-    def _format_per_share(cls, value: Any, currency: Optional[str] = None) -> str:
+    def _format_per_share(
+        cls,
+        value: Any,
+        currency: Optional[str] = None,
+        language: Optional[str] = None,
+    ) -> str:
         try:
             amount = float(value)
         except (TypeError, ValueError):
             return "N/A"
         if amount != amount:  # NaN
             return "N/A"
-        suffix = cls._CURRENCY_SUFFIX.get((currency or "").upper(), "元")
+        suffix = cls._currency_suffix(currency, language)
         return f"{amount:.4f} {suffix}"
 
     @staticmethod
@@ -2302,9 +2407,9 @@ class NotificationService(
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
 
-        self._append_financial_summary(lines, blocks, labels)
-        self._append_shareholder_return(lines, blocks, labels)
-        self._append_institutional_flow(lines, blocks, labels)
+        self._append_financial_summary(lines, blocks, labels, report_language)
+        self._append_shareholder_return(lines, blocks, labels, report_language)
+        self._append_institutional_flow(lines, blocks, labels, report_language)
         self._append_related_boards(lines, blocks, labels)
 
     def _append_financial_summary(
@@ -2312,15 +2417,16 @@ class NotificationService(
         lines: List[str],
         blocks: Dict[str, Any],
         labels: Dict[str, str],
+        report_language: str = "zh",
     ) -> None:
         report = blocks.get("financial_report") or {}
         growth = blocks.get("growth") or {}
         currency = report.get("currency") if isinstance(report.get("currency"), str) else None
         cells = {
             "report_date": self._format_text(report.get("report_date")),
-            "revenue": self._format_amount_cn(report.get("revenue"), currency),
-            "net_profit": self._format_amount_cn(report.get("net_profit_parent"), currency),
-            "operating_cash_flow": self._format_amount_cn(report.get("operating_cash_flow"), currency),
+            "revenue": self._format_amount_cn(report.get("revenue"), currency, report_language),
+            "net_profit": self._format_amount_cn(report.get("net_profit_parent"), currency, report_language),
+            "operating_cash_flow": self._format_amount_cn(report.get("operating_cash_flow"), currency, report_language),
             "roe": self._format_percent(report.get("roe") if report.get("roe") is not None else growth.get("roe")),
             "revenue_yoy": self._format_percent(growth.get("revenue_yoy")),
             "net_profit_yoy": self._format_percent(growth.get("net_profit_yoy")),
@@ -2353,6 +2459,7 @@ class NotificationService(
         lines: List[str],
         blocks: Dict[str, Any],
         labels: Dict[str, str],
+        report_language: str = "zh",
     ) -> None:
         dividend = blocks.get("dividend") or {}
         report = blocks.get("financial_report") or {}
@@ -2369,7 +2476,9 @@ class NotificationService(
 
         ttm_event_count = dividend.get("ttm_event_count")
         cells = {
-            "ttm_cash": self._format_per_share(dividend.get("ttm_cash_dividend_per_share"), dividend_currency),
+            "ttm_cash": self._format_per_share(
+                dividend.get("ttm_cash_dividend_per_share"), dividend_currency, report_language
+            ),
             "ttm_count": str(ttm_event_count) if isinstance(ttm_event_count, int) else "N/A",
             "ttm_yield": self._format_percent(dividend.get("ttm_dividend_yield_pct")),
             "latest_ex": self._format_text(latest_event.get("ex_dividend_date") or latest_event.get("event_date")),
@@ -2393,8 +2502,8 @@ class NotificationService(
         ])
 
     @classmethod
-    def _format_net_shares(cls, value: Any) -> str:
-        """Format an institutional net buy/sell in 万股/亿股, signed (+ = net buy).
+    def _format_net_shares(cls, value: Any, language: Optional[str] = None) -> str:
+        """Format an institutional net buy/sell in 万股/亿股 (ko: 만 주/억 주), signed.
 
         Thresholds: abs >= 1e8 -> 亿股, >= 1e4 -> 万股, else 股. A value whose rounded
         figure reaches the next unit also moves up (99_999_999 -> 1.00 亿股, 9_999.6 ->
@@ -2406,12 +2515,29 @@ class NotificationService(
             return "N/A"
         if amount != amount:  # NaN
             return "N/A"
+        lang = normalize_report_language(language)
         sign = "+" if amount > 0 else ("-" if amount < 0 else "")
         a = abs(amount)
+        big = a >= 1e8 or round(a / 1e4, 2) >= 1e4
+        mid = a >= 1e4 or round(a) >= 1e4
+        if lang == "ko":
+            if big:
+                return f"{sign}{a / 1e8:.2f}억 주"
+            if mid:
+                return f"{sign}{a / 1e4:.2f}만 주"
+            return f"{sign}{a:.0f}주"
+        if lang == "en":
+            if a >= 1e9:
+                return f"{sign}{a / 1e9:.2f}B shares"
+            if a >= 1e6:
+                return f"{sign}{a / 1e6:.2f}M shares"
+            if a >= 1e3:
+                return f"{sign}{a / 1e3:.2f}K shares"
+            return f"{sign}{a:.0f} shares"
         # Compare the rounded figure too, so 99_999_999 reads 1.00 亿股 rather than 10000.00 万股.
-        if a >= 1e8 or round(a / 1e4, 2) >= 1e4:
+        if big:
             return f"{sign}{a / 1e8:.2f} 亿股"
-        if a >= 1e4 or round(a) >= 1e4:
+        if mid:
             return f"{sign}{a / 1e4:.2f} 万股"
         return f"{sign}{a:.0f} 股"
 
@@ -2420,6 +2546,7 @@ class NotificationService(
         lines: List[str],
         blocks: Dict[str, Any],
         labels: Dict[str, str],
+        report_language: str = "zh",
     ) -> None:
         """Append the 三大法人 (institutional flows) table — tw-only.
 
@@ -2431,17 +2558,21 @@ class NotificationService(
             return
         inst = blocks.get("institution") or {}
         cells = {
-            "foreign": self._format_net_shares(inst.get("foreign_net")),
-            "trust": self._format_net_shares(inst.get("trust_net")),
-            "dealer": self._format_net_shares(inst.get("dealer_net")),
-            "total": self._format_net_shares(inst.get("total_net")),
+            "foreign": self._format_net_shares(inst.get("foreign_net"), report_language),
+            "trust": self._format_net_shares(inst.get("trust_net"), report_language),
+            "dealer": self._format_net_shares(inst.get("dealer_net"), report_language),
+            "total": self._format_net_shares(inst.get("total_net"), report_language),
         }
         if all(v == "N/A" for v in cells.values()):
             return
         date = self._format_text(inst.get("date"))
         source = self._format_text(inst.get("source"))
+        if normalize_report_language(report_language) == "zh":
+            heading_suffix = f"（{date} · {source}）"
+        else:
+            heading_suffix = f" ({date} · {source})"
         lines.extend([
-            f"### 📊 {labels['institutional_flow_heading']}（{date} · {source}）",
+            f"### 📊 {labels['institutional_flow_heading']}{heading_suffix}",
             "",
             f"> {labels['institutional_flow_note']}",
             "",

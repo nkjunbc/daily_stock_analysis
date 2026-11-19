@@ -19,8 +19,8 @@ class KoreanFallbackTextTestCase(unittest.TestCase):
 
     def test_market_review_titles_korean(self) -> None:
         text = _get_market_review_text("ko")
-        self.assertEqual(text["push_title"], "🎯 시황 리뷰")
-        self.assertIn("시황 리뷰", text["root_title"])
+        self.assertEqual(text["push_title"], "🎯 시황 요약")
+        self.assertIn("시황 요약", text["root_title"])
         self.assertIn("한국", text["kr_title"])
 
     def test_market_review_titles_unchanged_for_en_zh(self) -> None:

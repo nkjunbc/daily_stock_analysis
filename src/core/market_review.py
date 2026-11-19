@@ -129,26 +129,26 @@ def _get_market_review_text(language: str) -> dict[str, str]:
         }
     if normalized == "ko":
         return {
-            "root_title": "# 🎯 시황 리뷰",
-            "push_title": "🎯 시황 리뷰",
-            "cn_title": "# 중국 A주 시황 리뷰",
-            "us_title": "# 미국 시황 리뷰",
-            "hk_title": "# 홍콩 시황 리뷰",
-            "jp_title": "# 일본 시황 리뷰",
-            "kr_title": "# 한국 시황 리뷰",
-            "tw_title": "# 대만 시황 리뷰",
-            "separator": "> 다음 시장 시황 리뷰",
+            "root_title": "# 🎯 시황 요약",
+            "push_title": "🎯 시황 요약",
+            "cn_title": "# 중국 A주 시황 요약",
+            "us_title": "# 미국 시황 요약",
+            "hk_title": "# 홍콩 시황 요약",
+            "jp_title": "# 일본 시황 요약",
+            "kr_title": "# 한국 시황 요약",
+            "tw_title": "# 대만 시황 요약",
+            "separator": "> 다음 시장 시황 요약",
         }
     return {
-        "root_title": "# 🎯 시황 요약",
-        "push_title": "🎯 시황 요약",
-        "cn_title": "# 중국 증시 요약",
-        "us_title": "# 미국 증시 요약",
-        "hk_title": "# 홍콩 증시 요약",
-        "jp_title": "# 일본 증시 요약",
-        "kr_title": "# 한국 증시 요약",
-        "tw_title": "# 대만 증시 요약",
-        "separator": "> 다음 시장 요약",
+        "root_title": "# 🎯 大盘复盘",
+        "push_title": "🎯 大盘复盘",
+        "cn_title": "# A股大盘复盘",
+        "us_title": "# 美股大盘复盘",
+        "hk_title": "# 港股大盘复盘",
+        "jp_title": "# 日股大盘复盘",
+        "kr_title": "# 韩股大盘复盘",
+        "tw_title": "# 台股大盘复盘",
+        "separator": "> 以下为下一市场大盘复盘",
     }
 
 
@@ -667,7 +667,12 @@ def _render_sector_payload_markdown_block(
     if not sector_block:
         return ""
     language = normalize_report_language(payload.get("language"))
-    title = "Sector Highlights" if language == "en" else "板块主线"
+    if language == "ko":
+        title = "섹터 하이라이트"
+    elif language == "en":
+        title = "Sector Highlights"
+    else:
+        title = "板块主线"
     heading = f"{title_prefix} / {title}" if title_prefix else title
     return f"### {heading}\n\n{sector_block}".strip()
 
@@ -724,6 +729,9 @@ def _markdown_contains_sector_markers(text: str) -> bool:
         "#### Lagging Sectors",
         "#### Leading Industry Sectors",
         "#### Lagging Industry Sectors",
+        "#### 주도 섹터",
+        "#### 부진 섹터",
+        "| 순위 | 섹터 |",
         "| 排名 | 板块 |",
         "| 排名 | 行业板块 |",
         "| Rank | Sector |",
@@ -743,7 +751,9 @@ def _render_sector_payload_block(payload: Dict[str, Any]) -> str:
     language = normalize_report_language(payload.get("language"))
     lines = []
     if top:
-        if language == "en":
+        if language == "ko":
+            lines.extend(["#### 주도 섹터 Top 5", "| 순위 | 섹터 | 등락률 |", "|------|------|--------|"])
+        elif language == "en":
             lines.extend(["#### Leading Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
         else:
             lines.extend(["#### 领涨板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
@@ -755,7 +765,9 @@ def _render_sector_payload_block(payload: Dict[str, Any]) -> str:
     if bottom:
         if lines:
             lines.append("")
-        if language == "en":
+        if language == "ko":
+            lines.extend(["#### 부진 섹터 Top 5", "| 순위 | 섹터 | 등락률 |", "|------|------|--------|"])
+        elif language == "en":
             lines.extend(["#### Lagging Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
         else:
             lines.extend(["#### 领跌板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])

@@ -5136,7 +5136,14 @@ Output the complete Decision Dashboard in JSON format."""
         """格式化成交量显示"""
         if volume is None:
             return 'N/A'
-        if normalize_report_language(report_language) in ("en", "ko"):
+        language = normalize_report_language(report_language)
+        if language == "ko":
+            if volume >= 1e8:
+                return f"{volume / 1e8:.2f}억 주"
+            elif volume >= 1e4:
+                return f"{volume / 1e4:.2f}만 주"
+            return f"{volume:.0f}주"
+        if language == "en":
             return f"{self._format_scaled_number_en(volume)} shares"
         if volume >= 1e8:
             return f"{volume / 1e8:.2f} 亿股"
@@ -5144,12 +5151,19 @@ Output the complete Decision Dashboard in JSON format."""
             return f"{volume / 1e4:.2f} 万股"
         else:
             return f"{volume:.0f} 股"
-    
+
     def _format_amount(self, amount: Optional[float], report_language: str = "zh") -> str:
-        """格式化成交额显示"""
+        """格式化成交额显示（不含币种；韩国语报告用 억/만）"""
         if amount is None:
             return 'N/A'
-        if normalize_report_language(report_language) in ("en", "ko"):
+        language = normalize_report_language(report_language)
+        if language == "ko":
+            if amount >= 1e8:
+                return f"{amount / 1e8:.2f}억"
+            elif amount >= 1e4:
+                return f"{amount / 1e4:.2f}만"
+            return f"{amount:.0f}"
+        if language == "en":
             return self._format_scaled_number_en(amount)
         if amount >= 1e8:
             return f"{amount / 1e8:.2f} 亿元"
@@ -5192,6 +5206,7 @@ Output the complete Decision Dashboard in JSON format."""
         today = context.get('today', {}) or {}
         realtime = context.get('realtime', {}) or {}
         yesterday = context.get('yesterday', {}) or {}
+        snapshot_language = normalize_report_language(getattr(self, "report_language", "zh"))
 
         prev_close = yesterday.get('close')
         close = today.get('close')
@@ -5221,8 +5236,8 @@ Output the complete Decision Dashboard in JSON format."""
             "pct_chg": self._format_percent(today.get('pct_chg')),
             "change_amount": self._format_price(change_amount),
             "amplitude": self._format_percent(amplitude),
-            "volume": self._format_volume(today.get('volume')),
-            "amount": self._format_amount(today.get('amount')),
+            "volume": self._format_volume(today.get('volume'), snapshot_language),
+            "amount": self._format_amount(today.get('amount'), snapshot_language),
         }
 
         if realtime:

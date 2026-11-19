@@ -222,6 +222,7 @@ def render(
         "sell_count": sell_count,
         "hold_count": hold_count,
         "labels": labels,
+        "label_sep": "：" if report_language == "zh" else ": ",
         "report_language": report_language,
         "models_used": models_used,
         "show_llm_model": show_llm_model,
