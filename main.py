@@ -90,6 +90,7 @@ from datetime import date, datetime, timezone, timedelta
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
+from src.report_language import sanitize_report_text
 from src.brokers.futu.portfolio import FutuPortfolioError
 from src.core.analysis_run_marker import (
     record_analysis_run_marker,
@@ -1259,9 +1260,15 @@ def run_full_analysis(
 
             # 如果有结果，赋值给 market_report 用于后续飞书文档生成
             if review_result:
-                market_report = _market_review_report_text(review_result)
+                market_report = sanitize_report_text(
+                    _market_review_report_text(review_result),
+                    getattr(config, "report_language", "zh"),
+                )
             elif can_reuse_market_context:
-                market_report = market_context_full_report or market_context_summary
+                market_report = sanitize_report_text(
+                    market_context_full_report or market_context_summary,
+                    getattr(config, "report_language", "zh"),
+                )
 
         expected_stock_report = (
             not getattr(args, "dry_run", False)

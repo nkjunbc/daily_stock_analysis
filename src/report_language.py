@@ -821,6 +821,35 @@ def normalize_report_language(value: Optional[str], default: str = "zh") -> str:
     return default
 
 
+_CJK_TEXT_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+_CJK_GLOSS_PATTERN = re.compile(
+    r"[（(]\s*[\u3400-\u4dbf\u4e00-\u9fff][\u3400-\u4dbf\u4e00-\u9fff\s·,，、/]*[)）]"
+)
+_CJK_RUN_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
+
+
+def sanitize_report_text(text: str, language: Optional[str]) -> str:
+    """Remove Chinese-character residue from a non-Chinese report body.
+
+    The model occasionally glosses a Korean term with hanja (``비(非)AI``) even
+    when the report language is ``ko``. For ``ko`` reports those glosses and any
+    remaining CJK run are stripped so the delivered report carries no Chinese
+    characters; ``zh`` and ``en`` texts are returned unchanged.
+    """
+    if not text or not isinstance(text, str):
+        return text
+    if normalize_report_language(language) != "ko":
+        return text
+    if not _CJK_TEXT_PATTERN.search(text):
+        return text
+    cleaned = _CJK_GLOSS_PATTERN.sub("", text)
+    cleaned = _CJK_RUN_PATTERN.sub("", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"[ \t]+([,.;:!?)\]}])", r"\1", cleaned)
+    cleaned = re.sub(r"([(\[{])[ \t]+", r"\1", cleaned)
+    return cleaned
+
+
 def is_supported_report_language_value(value: Optional[str]) -> bool:
     """Return whether the raw value is a supported language code or alias."""
     candidate = (value or "").strip().lower().replace(" ", "_")

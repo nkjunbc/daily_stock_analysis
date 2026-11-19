@@ -2274,7 +2274,8 @@ class FreeNewsSearchProvider(BaseSearchProvider):
     }
     _HTML_TAG_RE = re.compile(r"<[^>]+>")
     _WHITESPACE_RE = re.compile(r"\s+")
-    _TICKER_RE = re.compile(r"\b[A-Z]{1,5}(?:\.[A-Z])?\b")
+    # Tokens glued to ``&`` (``S&P``) are index shorthand, not tickers.
+    _TICKER_RE = re.compile(r"(?<![A-Za-z&])[A-Z]{1,5}(?:\.[A-Z])?(?![A-Za-z&])")
     _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
     def __init__(self, name: str = "GoogleNewsRSS", timeout_seconds: Optional[float] = None):

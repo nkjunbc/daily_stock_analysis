@@ -53,6 +53,7 @@ from src.report_language import (
     localize_trend_prediction,
     normalize_report_language,
     normalize_strategy_synthesis_payload,
+    sanitize_report_text,
     strategy_invalid_opinion_count,
 )
 from src.schemas.decision_action import (
@@ -1320,7 +1321,7 @@ class NotificationService(
                 },
             )
             if out:
-                return out
+                return sanitize_report_text(out, report_language)
 
         if report_date is None:
             report_date = datetime.now().strftime('%Y-%m-%d')
@@ -1642,7 +1643,7 @@ class NotificationService(
                 f"*{labels['analysis_model_label']}{_label_separator(report_language)}{', '.join(models)}*"
             )
 
-        return "\n".join(report_lines)
+        return sanitize_report_text("\n".join(report_lines), report_language)
 
     def generate_wechat_dashboard(self, results: List[AnalysisResult]) -> str:
         """
@@ -1944,7 +1945,7 @@ class NotificationService(
                 extra_context={"report_language": report_language},
             )
             if out:
-                return out
+                return sanitize_report_text(out, report_language)
         # Fallback: brief summary from dashboard report
         if not results:
             return f"# {report_date} {labels['brief_title']}\n\n{labels['no_results']}"
@@ -1977,7 +1978,7 @@ class NotificationService(
         models = self._collect_models_used(results)
         if models:
             lines.append(f"*{labels['analysis_model_label']}: {', '.join(models)}*")
-        return "\n".join(lines)
+        return sanitize_report_text("\n".join(lines), report_language)
 
     def generate_single_stock_report(self, result: AnalysisResult) -> str:
         """
