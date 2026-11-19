@@ -1209,7 +1209,7 @@ def run_full_analysis(
                     and pipeline.notifier.is_available()
                 ):
                     if pipeline.notifier.send(
-                        f"# 📈 大盘复盘\n\n{market_report}",
+                        f"{_report_header(config, '# 📈 大盘复盘', '# 🎯 Market Review', '# 🎯 시황 요약')}\n\n{market_report}",
                         email_send_to_all=True,
                         route_type="report",
                     ):
