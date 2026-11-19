@@ -427,21 +427,6 @@ class NotificationService(
         return empty_news_disclosure(result, language)
 
     @staticmethod
-    def _spacex_section(report_language: str) -> str:
-        """Return the SpaceX (private company) digest block, or "" when unavailable.
-
-        Strictly fail-open: any error in the digest keeps the report exactly as it
-        would be without this section.
-        """
-        try:
-            from src.spacex_watch import render_spacex_section
-
-            return render_spacex_section(report_language) or ""
-        except Exception as exc:  # noqa: BLE001 - never break the daily report
-            logger.warning("SpaceX 동향 섹션 생성 실패(무시): %s", exc)
-            return ""
-
-    @staticmethod
     def _append_data_sources_line(
         lines: List[str],
         result: AnalysisResult,
@@ -464,15 +449,12 @@ class NotificationService(
         results: List[AnalysisResult],
         report_type: Any,
         report_date: Optional[str] = None,
-        include_spacex: bool = False,
     ) -> str:
         """Generate the aggregate report content used by merge/save/push paths."""
         normalized_type = self._normalize_report_type(report_type)
         if normalized_type == ReportType.BRIEF:
             return self.generate_brief_report(results, report_date=report_date)
-        return self.generate_dashboard_report(
-            results, report_date=report_date, include_spacex=include_spacex
-        )
+        return self.generate_dashboard_report(results, report_date=report_date)
 
     def _collect_models_used(self, results: List[AnalysisResult]) -> List[str]:
         if not self._should_show_llm_model():
@@ -1295,7 +1277,6 @@ class NotificationService(
         self,
         results: List[AnalysisResult],
         report_date: Optional[str] = None,
-        include_spacex: bool = False,
     ) -> str:
         """
         生成决策仪表盘格式的日报（详细版）
@@ -1339,9 +1320,6 @@ class NotificationService(
                 },
             )
             if out:
-                spacex_section = self._spacex_section(report_language) if include_spacex else ""
-                if spacex_section:
-                    return f"{out.rstrip()}\n\n{spacex_section}"
                 return out
 
         if report_date is None:
@@ -1654,9 +1632,6 @@ class NotificationService(
                 ])
 
         # 底部（去除免责声明）
-        spacex_section = self._spacex_section(report_language) if include_spacex else ""
-        if spacex_section:
-            report_lines.extend([spacex_section, "", "---", ""])
         report_lines.extend([
             "",
             f"*{labels['generated_at_label']}{_label_separator(report_language)}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",

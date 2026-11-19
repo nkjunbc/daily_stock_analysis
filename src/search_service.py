@@ -11,18 +11,20 @@ A股自选股智能分析系统 - 搜索服务模块
 4. 搜索结果缓存和格式化
 """
 
+import html
 import logging
 import multiprocessing
 import re
 import threading
 import time
+import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import List, Dict, Any, Optional, Tuple
 from itertools import cycle
-from urllib.parse import parse_qsl, unquote, urlparse
+from urllib.parse import parse_qsl, quote_plus, unquote, urlparse
 import requests
 from newspaper import Article, Config
 from tenacity import (
@@ -36,6 +38,7 @@ from tenacity import (
 from data_provider.us_index_mapping import is_us_index_code
 from src.config import (
     NEWS_STRATEGY_WINDOWS,
+    free_news_fallback_enabled,
     normalize_news_strategy_profile,
     resolve_news_window_days,
 )
@@ -2241,6 +2244,417 @@ class SearXNGSearchProvider(BaseSearchProvider):
         )
 
 
+class FreeNewsSearchProvider(BaseSearchProvider):
+    """News provider that needs no API key (Google News RSS + yfinance).
+
+    ``SearchService`` registers it last, so it is used when no paid engine is
+    configured or when every configured engine fails or filters down to nothing.
+    Every source failure is fail-open: it only removes that source from the
+    result set and never raises into the analysis pipeline.
+    """
+
+    RSS_URL = "https://news.google.com/rss/search"
+    DEFAULT_TIMEOUT_SECONDS = 8.0
+    MAX_ITEMS_PER_SOURCE = 12
+    MAX_YFINANCE_ITEMS_PER_TICKER = 5
+    CACHE_TTL_SECONDS = 600
+    USER_AGENT = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    )
+    # Uppercase query tokens that look like tickers but are not company symbols.
+    TICKER_STOPWORDS = {
+        "A", "AN", "AND", "THE", "OR", "FOR", "OF", "IN", "ON", "AT", "TO",
+        "US", "USA", "UK", "EU", "CN", "HK", "JP", "KR",
+        "AI", "API", "CEO", "CFO", "CTO", "IPO", "ETF", "ETN",
+        "CPI", "PPI", "GDP", "FED", "SEC", "FDA", "FOMC", "ECB", "BOJ",
+        "NYSE", "NASDAQ", "DOW", "SPX", "DJIA", "SP", "P", "Q", "YOY", "QOQ",
+        "EPS", "PE", "PB", "ROE", "ROI", "YTD", "ATH", "EOD", "PM", "AM",
+        "NEWS", "STOCK", "STOCKS", "MARKET", "PRICE", "INDEX", "REPORT",
+    }
+    _HTML_TAG_RE = re.compile(r"<[^>]+>")
+    _WHITESPACE_RE = re.compile(r"\s+")
+    _TICKER_RE = re.compile(r"\b[A-Z]{1,5}(?:\.[A-Z])?\b")
+    _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+    def __init__(self, name: str = "GoogleNewsRSS", timeout_seconds: Optional[float] = None):
+        super().__init__([], name)
+        self._timeout = float(timeout_seconds or self.DEFAULT_TIMEOUT_SECONDS)
+        self._cache: Dict[Tuple[str, int, int], Tuple[float, SearchResponse]] = {}
+        self._ticker_cache: Dict[str, Tuple[float, List[SearchResult]]] = {}
+        self._lock = threading.RLock()
+
+    @property
+    def is_available(self) -> bool:
+        """Always available: both sources are free and keyless."""
+        return True
+
+    # ------------------------------------------------------------------
+    # BaseSearchProvider contract
+    # ------------------------------------------------------------------
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+        **search_kwargs: Any,
+    ) -> SearchResponse:
+        return self.search(query, max_results=max_results, days=days, **search_kwargs)
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        days: int = 7,
+        tickers: Optional[List[str]] = None,
+        **_: Any,
+    ) -> SearchResponse:
+        """Return recent headlines for ``query`` from the free sources."""
+        text = (query or "").strip()
+        limit = max(1, int(max_results or 5))
+        window = max(1, int(days or 7))
+        if not text:
+            return SearchResponse(
+                query=text,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="empty query",
+            )
+
+        cache_key = (text, limit, window)
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        started_at = time.time()
+        errors: List[str] = []
+        results: List[SearchResult] = []
+
+        try:
+            results.extend(self._fetch_google_news(text, window))
+        except Exception as exc:  # noqa: BLE001 - fail-open by design
+            errors.append(f"google-news: {type(exc).__name__}")
+            logger.info("[%s] Google News RSS 不可用（忽略）: %s", self.name, exc)
+
+        candidate_tickers = self._resolve_tickers(text, tickers)
+        if candidate_tickers:
+            try:
+                results.extend(self._fetch_yfinance_news(candidate_tickers, window))
+            except Exception as exc:  # noqa: BLE001 - fail-open by design
+                errors.append(f"yfinance: {type(exc).__name__}")
+                logger.info("[%s] yfinance 新闻不可用（忽略）: %s", self.name, exc)
+
+        merged = self._merge_and_sort(results)[: max(limit, self.MAX_ITEMS_PER_SOURCE)]
+        elapsed = time.time() - started_at
+
+        if not merged:
+            response = SearchResponse(
+                query=text,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="；".join(errors) or "免费新闻源无结果",
+                search_time=elapsed,
+            )
+            self._put_cache(cache_key, response)
+            return response
+
+        response = SearchResponse(
+            query=text,
+            results=merged,
+            provider=self.name,
+            success=True,
+            error_message=None,
+            search_time=elapsed,
+        )
+        response.mark_retrieved()
+        logger.info(
+            "[%s] 免费新闻 '%s' 返回 %s 条（tickers=%s, 耗时 %.2fs%s）",
+            self.name,
+            text,
+            len(merged),
+            ",".join(candidate_tickers) or "-",
+            elapsed,
+            f", errors={'; '.join(errors)}" if errors else "",
+        )
+        self._put_cache(cache_key, response)
+        return response
+
+    # ------------------------------------------------------------------
+    # Google News RSS
+    # ------------------------------------------------------------------
+    def _fetch_google_news(self, query: str, days: int) -> List[SearchResult]:
+        hl, gl, ceid = self._rss_locale(query)
+        rss_query = query if re.search(r"(?i)(^|\s)when:", query) else f"{query} when:{days}d"
+        url = f"{self.RSS_URL}?q={quote_plus(rss_query)}&hl={hl}&gl={gl}&ceid={ceid}"
+        resp = requests.get(
+            url,
+            timeout=self._timeout,
+            headers={
+                "User-Agent": self.USER_AGENT,
+                "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+            },
+        )
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        items: List[SearchResult] = []
+        for node in root.iter("item"):
+            parsed = self._parse_rss_item(node)
+            if parsed is not None:
+                items.append(parsed)
+            if len(items) >= self.MAX_ITEMS_PER_SOURCE:
+                break
+        return items
+
+    @staticmethod
+    def _rss_locale(query: str) -> Tuple[str, str, str]:
+        if re.search(r"[\u4e00-\u9fff]", query or ""):
+            return "zh-CN", "CN", "CN:zh-Hans"
+        return "en-US", "US", "US:en"
+
+    def _parse_rss_item(self, node: ET.Element) -> Optional[SearchResult]:
+        title = (node.findtext("title") or "").strip()
+        link = (node.findtext("link") or "").strip()
+        if not title or not link:
+            return None
+        source_node = node.find("source")
+        source = (source_node.text or "").strip() if source_node is not None else ""
+        if source and title.endswith(f" - {source}"):
+            title = title[: -(len(source) + 3)].strip()
+        description = self._clean_html(node.findtext("description") or "")
+        if description.startswith(title):
+            description = description[len(title):].strip(" -–—:")
+        snippet = description or (f"{source} · Google News" if source else "Google News")
+        return SearchResult(
+            title=title,
+            snippet=snippet[:400],
+            url=link,
+            source=source or "Google News",
+            published_date=self._format_rfc822_date(node.findtext("pubDate")),
+        )
+
+    # ------------------------------------------------------------------
+    # yfinance (Yahoo Finance)
+    # ------------------------------------------------------------------
+    def _fetch_yfinance_news(self, tickers: List[str], days: int) -> List[SearchResult]:
+        items: List[SearchResult] = []
+        for ticker in tickers:
+            cached = self._get_ticker_cache(ticker)
+            if cached is None:
+                cached = self._download_yfinance_news(ticker)
+                self._put_ticker_cache(ticker, cached)
+            taken = 0
+            for result in cached:
+                if not self._is_within_window(result.published_date, days):
+                    continue
+                items.append(result)
+                taken += 1
+                if taken >= self.MAX_YFINANCE_ITEMS_PER_TICKER:
+                    break
+            if len(items) >= self.MAX_ITEMS_PER_SOURCE:
+                break
+        return items
+
+    def _download_yfinance_news(self, ticker: str) -> List[SearchResult]:
+        try:
+            import yfinance as yf  # local import: optional at runtime
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[%s] yfinance 未安装，跳过 Yahoo 新闻: %s", self.name, exc)
+            return []
+
+        try:
+            raw = yf.Ticker(ticker).news or []
+        except Exception as exc:  # noqa: BLE001 - network/API shape changes
+            logger.info("[%s] yfinance(%s) 新闻查询失败: %s", self.name, ticker, exc)
+            return []
+
+        parsed_items: List[SearchResult] = []
+        for entry in raw:
+            parsed = self._parse_yfinance_entry(entry)
+            if parsed is not None:
+                parsed_items.append(parsed)
+        return parsed_items
+
+    @classmethod
+    def _parse_yfinance_entry(cls, entry: Any) -> Optional[SearchResult]:
+        if not isinstance(entry, dict):
+            return None
+        content = entry.get("content") if isinstance(entry.get("content"), dict) else None
+        if content:
+            title = (content.get("title") or "").strip()
+            url = ""
+            canonical = content.get("canonicalUrl")
+            if isinstance(canonical, dict):
+                url = (canonical.get("url") or "").strip()
+            elif isinstance(canonical, str):
+                url = canonical.strip()
+            if not url:
+                click = content.get("clickThroughUrl")
+                if isinstance(click, dict):
+                    url = (click.get("url") or "").strip()
+                elif isinstance(click, str):
+                    url = click.strip()
+            provider = content.get("provider")
+            source = (provider.get("displayName") or "").strip() if isinstance(provider, dict) else ""
+            published = content.get("pubDate") or content.get("displayTime")
+            summary = content.get("summary") or content.get("description") or ""
+        else:
+            title = (entry.get("title") or "").strip()
+            url = (entry.get("link") or entry.get("url") or "").strip()
+            publisher = entry.get("publisher") or entry.get("provider") or ""
+            source = (publisher.get("displayName") or "").strip() if isinstance(publisher, dict) else str(publisher).strip()
+            published = entry.get("providerPublishTime") or entry.get("pubDate")
+            summary = entry.get("summary") or ""
+        if not title or not url:
+            return None
+        snippet = cls._clean_html(str(summary)) or title
+        return SearchResult(
+            title=title,
+            snippet=snippet[:400],
+            url=url,
+            source=source or "Yahoo Finance",
+            published_date=cls._format_yfinance_date(published),
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    @classmethod
+    def _resolve_tickers(
+        cls,
+        query: str,
+        tickers: Optional[List[str]],
+    ) -> List[str]:
+        candidates: List[str] = [str(raw) for raw in (tickers or []) if raw]
+        if not candidates:
+            candidates = [match.group(0) for match in cls._TICKER_RE.finditer(query or "")]
+        resolved: List[str] = []
+        for candidate in candidates:
+            code = canonicalize_foreign_stock_code(candidate)
+            if not code or code in cls.TICKER_STOPWORDS or code in resolved:
+                continue
+            if not cls._TICKER_RE.fullmatch(code):
+                continue
+            resolved.append(code)
+        return resolved[:2]
+
+    @classmethod
+    def _clean_html(cls, value: str) -> str:
+        if not value:
+            return ""
+        text = cls._HTML_TAG_RE.sub(" ", value)
+        text = html.unescape(text)
+        return cls._WHITESPACE_RE.sub(" ", text).strip()
+
+    @staticmethod
+    def _format_rfc822_date(value: Optional[str]) -> Optional[str]:
+        raw = (value or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if parsed is None:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).date().isoformat()
+
+    @staticmethod
+    def _format_yfinance_date(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(value), tz=timezone.utc).date().isoformat()
+            except (OverflowError, OSError, ValueError):
+                return None
+        if isinstance(value, datetime):
+            moment = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            return moment.astimezone(timezone.utc).date().isoformat()
+        raw = str(value).strip()
+        if not raw:
+            return None
+        if FreeNewsSearchProvider._ISO_DATE_RE.match(raw):
+            try:
+                return (
+                    datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                    .astimezone(timezone.utc)
+                    .date()
+                    .isoformat()
+                )
+            except ValueError:
+                return raw[:10]
+        return None
+
+    @staticmethod
+    def _is_within_window(published_date: Optional[str], days: int) -> bool:
+        if not published_date:
+            return True
+        try:
+            published = date.fromisoformat(published_date[:10])
+        except ValueError:
+            return True
+        today = datetime.now(timezone.utc).date()
+        return (today - timedelta(days=max(0, int(days) - 1))) <= published <= today + timedelta(days=1)
+
+    @staticmethod
+    def _dedupe_key(result: SearchResult) -> str:
+        url = (result.url or "").strip().lower()
+        if url:
+            return f"url:{url}"
+        normalized = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", (result.title or "").lower())
+        return f"title:{normalized}"
+
+    @classmethod
+    def _merge_and_sort(cls, results: List[SearchResult]) -> List[SearchResult]:
+        seen: set = set()
+        merged: List[SearchResult] = []
+        for result in results:
+            key = cls._dedupe_key(result)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(result)
+        merged.sort(key=lambda item: item.published_date or "", reverse=True)
+        return merged
+
+    def _get_cached(self, key: Tuple[str, int, int]) -> Optional[SearchResponse]:
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            stored_at, response = entry
+            if time.time() - stored_at > self.CACHE_TTL_SECONDS:
+                self._cache.pop(key, None)
+                return None
+            return response
+
+    def _put_cache(self, key: Tuple[str, int, int], response: SearchResponse) -> None:
+        with self._lock:
+            if len(self._cache) > 64:
+                self._cache.clear()
+            self._cache[key] = (time.time(), response)
+
+    def _get_ticker_cache(self, ticker: str) -> Optional[List[SearchResult]]:
+        with self._lock:
+            entry = self._ticker_cache.get(ticker)
+            if entry is None:
+                return None
+            stored_at, items = entry
+            if time.time() - stored_at > self.CACHE_TTL_SECONDS:
+                self._ticker_cache.pop(ticker, None)
+                return None
+            return items
+
+    def _put_ticker_cache(self, ticker: str, items: List[SearchResult]) -> None:
+        with self._lock:
+            self._ticker_cache[ticker] = (time.time(), items)
+
+
 class SearchService:
     """
     搜索服务
@@ -2505,7 +2919,18 @@ class SearchService:
             else:
                 logger.info("已启用 SearXNG 公共实例自动发现模式")
 
-        if not self._providers:
+        # 8. 免费新闻源（Google News RSS + yfinance）。永远排在最后：没有付费
+        # 搜索 Key，或前面所有引擎都失败/过滤后无结果时接管，避免新闻搜索
+        # 整体跳过。FREE_NEWS_FALLBACK_ENABLED=false 可关闭。
+        self.free_news_provider: Optional[FreeNewsSearchProvider] = None
+        if free_news_fallback_enabled():
+            self.free_news_provider = FreeNewsSearchProvider()
+            self._providers.append(self.free_news_provider)
+            logger.info("已启用免费新闻源（Google News RSS + yfinance），无需 API Key")
+
+        if len(self._providers) == (1 if self.free_news_provider is not None else 0):
+            logger.info("未配置付费搜索 API Key，新闻检索将使用免费新闻源")
+        elif not self._providers:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
 
         # In-memory search result cache: {cache_key: (timestamp, SearchResponse)}
@@ -4147,6 +4572,12 @@ class SearchService:
                             prefer_chinese=prefer_chinese,
                         )
                     )
+                elif isinstance(provider, FreeNewsSearchProvider):
+                    # The free provider feeds Google News RSS from the query and
+                    # yfinance from the ticker; foreign codes are already canonical.
+                    search_kwargs["tickers"] = (
+                        [stock_code] if stock_code and self._is_foreign_stock(stock_code) else []
+                    )
 
                 started_at = time.monotonic()
                 try:
@@ -4366,9 +4797,16 @@ class SearchService:
         for provider in self._providers:
             if not provider.is_available:
                 continue
-            
-            response = provider.search(query, max_results=5)
-            
+
+            if isinstance(provider, FreeNewsSearchProvider):
+                response = provider.search(
+                    query,
+                    max_results=5,
+                    tickers=[stock_code] if stock_code and self._is_foreign_stock(stock_code) else [],
+                )
+            else:
+                response = provider.search(query, max_results=5)
+
             if response.success:
                 self._put_cache(cache_key, response)
                 return response
@@ -4575,6 +5013,13 @@ class SearchService:
                     days=request_days,
                     topic=dim['tavily_topic'],
                 )
+            elif isinstance(provider, FreeNewsSearchProvider):
+                response = provider.search(
+                    dim['query'],
+                    max_results=provider_max_results,
+                    days=request_days,
+                    tickers=[stock_code] if stock_code and self._is_foreign_stock(stock_code) else [],
+                )
             else:
                 response = provider.search(
                     dim['query'],
@@ -4660,21 +5105,32 @@ class SearchService:
             'industry': '🏭 行业分析',
         }
 
+        # 同一头条可能同时命中多个维度（尤其免费新闻源窗口较窄时）。同一次
+        # 分析上下文中重复出现只会稀释提示词，因此在首个维度展示后去重。
+        seen_titles: set = set()
+
         for dim_name in display_order:
             if dim_name not in intel_results:
                 continue
-                
+
             resp = intel_results[dim_name]
-            
+
             # 获取维度描述
             dim_desc = dim_labels.get(dim_name, dim_name)
-            
+
             lines.append(f"\n{dim_desc} (来源: {resp.provider}):")
             if resp.success and resp.results:
                 # 增加显示条数
-                for i, r in enumerate(resp.results[:4], 1):
+                shown = 0
+                for r in resp.results[:4]:
+                    title_key = re.sub(r"\s+", " ", (r.title or "").strip().lower())
+                    if title_key and title_key in seen_titles:
+                        continue
+                    if title_key:
+                        seen_titles.add(title_key)
+                    shown += 1
                     date_str = f" [{r.published_date}]" if r.published_date else ""
-                    lines.append(f"  {i}. {r.title}{date_str}")
+                    lines.append(f"  {shown}. {r.title}{date_str}")
                     # 如果摘要太短，可能信息量不足
                     snippet = r.snippet[:150] if len(r.snippet) > 20 else r.snippet
                     lines.append(f"     {snippet}...")
@@ -4687,6 +5143,8 @@ class SearchService:
                         if r.relevance_reasons:
                             relevance_parts.append(f"依据: {'；'.join(r.relevance_reasons[:3])}")
                         lines.append(f"     关联度: {'; '.join(relevance_parts)}")
+                if not shown:
+                    lines.append("  （与上方维度为同一条新闻，已省略）")
             else:
                 lines.append("  未找到相关信息")
         
@@ -4774,11 +5232,11 @@ class SearchService:
             
             logger.info(f"[增强搜索] 第 {i+1}/{max_attempts} 次搜索: {query}")
             
-            # 依次尝试各个搜索引擎
+            # 依次尝试各个搜索引擎（免费新闻源只提供新闻，不参与股价上下文补全）
             for provider in self._providers:
-                if not provider.is_available:
+                if not provider.is_available or isinstance(provider, FreeNewsSearchProvider):
                     continue
-                
+
                 try:
                     response = provider.search(query, max_results=3)
                     

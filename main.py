@@ -1299,7 +1299,6 @@ def run_full_analysis(
                 dashboard_content = pipeline.notifier.generate_aggregate_report(
                     results,
                     getattr(config, 'report_type', 'simple'),
-                    include_spacex=True,
                 )
                 parts.append(
                     f"{_report_header(config, '# 🚀 个股决策仪表盘', '# 🚀 Decision Dashboard', '# 🚀 종목 결정 대시보드')}\n\n{dashboard_content}"
@@ -1349,7 +1348,6 @@ def run_full_analysis(
                     dashboard_content = pipeline.notifier.generate_aggregate_report(
                         results,
                         getattr(config, 'report_type', 'simple'),
-                        include_spacex=True,
                     )
                     full_content += (
                         f"{_report_header(config, '# 🚀 个股决策仪表盘', '# 🚀 Decision Dashboard', '# 🚀 종목 결정 대시보드')}"

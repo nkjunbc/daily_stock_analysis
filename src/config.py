@@ -345,6 +345,16 @@ def resolve_news_window_days(news_max_age_days: int, news_strategy_profile: Opti
     return max(1, min(max(1, int(news_max_age_days)), profile_days))
 
 
+def free_news_fallback_enabled() -> bool:
+    """Whether the keyless news fallback (Google News RSS + yfinance) is enabled.
+
+    On by default so news search works without any paid search API key;
+    ``FREE_NEWS_FALLBACK_ENABLED=false`` disables it.
+    """
+    raw = (os.getenv("FREE_NEWS_FALLBACK_ENABLED", "true") or "").strip().lower()
+    return raw not in {"0", "false", "no", "off", "disabled"}
+
+
 def normalize_agent_context_compression_profile(value: Optional[str]) -> str:
     """Normalize visible-chat context compression profile values."""
     candidate = (value or AGENT_CONTEXT_COMPRESSION_DEFAULT_PROFILE).strip().lower()
@@ -3182,7 +3192,12 @@ class Config:
         return bool(self.searxng_base_urls) or bool(self.searxng_public_instances_enabled)
 
     def has_search_capability_enabled(self) -> bool:
-        """Whether any search provider is configured or SearXNG fallback is enabled."""
+        """Whether any search provider is configured or SearXNG fallback is enabled.
+
+        The keyless news fallback (Google News RSS + yfinance) is on by default, so
+        news search keeps working without any paid API key; ``FREE_NEWS_FALLBACK_ENABLED``
+        set to a falsy value turns it off.
+        """
         return bool(
             self.anspire_api_keys
             or self.bocha_api_keys
@@ -3191,6 +3206,7 @@ class Config:
             or self.brave_api_keys
             or self.serpapi_keys
             or self.has_searxng_enabled()
+            or free_news_fallback_enabled()
         )
 
     def is_agent_available(self) -> bool:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import os
 import time
 import threading
 from collections.abc import Awaitable, Callable
@@ -20,6 +21,12 @@ import starlette.testclient
 from anyio._backends import _asyncio
 
 T = TypeVar("T")
+
+# The keyless news fallback (Google News RSS + yfinance) is on by default in
+# production. Tests must stay hermetic and deterministic, so disable it unless a
+# test opts in explicitly (tests for the fallback build the provider directly or
+# monkeypatch this flag).
+os.environ.setdefault("FREE_NEWS_FALLBACK_ENABLED", "false")
 
 _original_call_soon_threadsafe = asyncio.BaseEventLoop.call_soon_threadsafe
 

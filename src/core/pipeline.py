@@ -4428,21 +4428,6 @@ class StockAnalysisPipeline:
             import traceback
             logger.error(f"发送通知失败: {e}\n{traceback.format_exc()}")
 
-    @staticmethod
-    def _callable_accepts_keyword(func: Any, keyword: str) -> bool:
-        """Return True when ``func`` can take ``keyword`` (explicit or via **kwargs)."""
-        import inspect
-
-        try:
-            parameters = inspect.signature(func).parameters
-        except (TypeError, ValueError):
-            return False
-        if keyword in parameters:
-            return True
-        return any(
-            param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()
-        )
-
     def _generate_aggregate_report(
         self,
         results: List[AnalysisResult],
@@ -4451,20 +4436,7 @@ class StockAnalysisPipeline:
         """Generate aggregate report with backward-compatible notifier fallback."""
         generator = getattr(self.notifier, "generate_aggregate_report", None)
         if callable(generator):
-            if self._callable_accepts_keyword(generator, "include_spacex"):
-                try:
-                    return generator(results, report_type, include_spacex=True)
-                except TypeError as exc:
-                    if "include_spacex" not in str(exc):
-                        raise
             return generator(results, report_type)
         if report_type == ReportType.BRIEF and hasattr(self.notifier, "generate_brief_report"):
             return self.notifier.generate_brief_report(results)
-        dashboard_report = self.notifier.generate_dashboard_report
-        if self._callable_accepts_keyword(dashboard_report, "include_spacex"):
-            try:
-                return dashboard_report(results, include_spacex=True)
-            except TypeError as exc:
-                if "include_spacex" not in str(exc):
-                    raise
-        return dashboard_report(results)
+        return self.notifier.generate_dashboard_report(results)

@@ -92,6 +92,10 @@ STOCK_NAME_MAP = {
     "LI": "理想汽车",
     "COIN": "Coinbase",
     "MSTR": "MicroStrategy",
+    # SpaceX listed on NASDAQ as SPCX (2026-06). The English display name keeps the
+    # news query and relevance paths in English; the STOCK_ENGLISH_NAME_MAP entry
+    # below satisfies the foreign-alias invariant for non-CJK display names.
+    "SPCX": "SpaceX",
     # === HK stocks (5-digit) ===
     "00700": "腾讯控股",
     "03690": "美团",
@@ -158,6 +162,7 @@ STOCK_ENGLISH_NAME_MAP: Dict[str, Tuple[str, ...]] = {
     "LI": ("Li Auto Inc.", "Li Auto"),
     "COIN": ("Coinbase Global, Inc.", "Coinbase"),
     "MSTR": ("MicroStrategy Incorporated", "MicroStrategy"),
+    "SPCX": ("SpaceX", "Space Exploration Technologies Corp."),
     # === HK stocks (5-digit) ===
     "00700": ("Tencent Holdings", "Tencent"),
     "03690": ("Meituan",),
